@@ -1,139 +1,126 @@
-# JunimoServer
+# Stardew Valley GOG Standalone Dedicated Server
 
-<!-- Project -->
+A lightweight, standalone Docker setup for hosting a **Stardew Valley** dedicated server using local **GOG Linux** game files without requiring Steam credentials, Steam authentication sidecars, or online lobbies.
 
-![GitHub Tag](https://img.shields.io/github/v/tag/stardew-valley-dedicated-server/server?label=Latest%20Release&style=flat-square&colorA=18181B) ![Static Badge](https://img.shields.io/badge/Stardew%20Valley-v1.6.15-34D058?style=flat-square&colorA=18181B) [![CodeQL](https://img.shields.io/github/actions/workflow/status/stardew-valley-dedicated-server/server/codeql.yml?branch=master&label=CodeQL&style=flat-square&colorA=18181B)](https://github.com/stardew-valley-dedicated-server/server/actions/workflows/codeql.yml) [![E2E Tests](https://img.shields.io/endpoint?url=https%3A%2F%2Fpub-8b02482b459740d1b403ddbc47d0b817.r2.dev%2Fe2e%2Fmaster%2Fbadge.json&style=flat-square&colorA=18181B)](https://pub-8b02482b459740d1b403ddbc47d0b817.r2.dev/e2e/master/latest/index.html) [![Discord](https://img.shields.io/discord/947923329057185842?label=Discord&logo=discord&color=34D058&style=flat-square&colorA=18181B)](https://discord.gg/w23GVXdSF7)
-
-**JunimoServer** makes [Stardew Valley](https://www.stardewvalley.net/) multiplayer hosting simple and flexible. Host your farm anytime, anywhere — on your local machine, a VPS, or a dedicated server.
-
-This open-source project enables 24/7 multiplayer farms without needing to keep the game running on your machine. Players can connect at any time without requiring you to be online. With customizable settings, automated backups, and support for larger farms, JunimoServer makes multiplayer management easier than ever.
-
-### Table of Contents
-
-<!-- REGENERATE TOC: npx markdown-toc -i README.md -->
-
-<!-- toc -->
-
-- [Features](#features)
-- [Quick start](#quick-start)
-    - [Prerequisites](#prerequisites)
-    - [Getting started](#getting-started)
-    - [Updating to a new version](#updating-to-a-new-version)
-    - [Using preview releases](#using-preview-releases)
-- [Documentation](#documentation)
-- [Support](#support)
-
-<!-- tocstop -->
+---
 
 ## Features
 
-JunimoServer gives you everything you need to host Stardew Valley:
+- 🎮 **Offline & LAN Multiplayer**: Host multiplayer games directly over LAN or IP address without needing Steam login or GOG Galaxy online authentication.
+- 🚀 **Standalone Docker Setup**: No `steam-auth` or `discord-bot` containers needed. Runs purely as a single container.
+- 🖥️ **Web Admin GUI & REST API**: Control your server via a built-in web interface (`http://localhost:5800`) or REST API (`http://localhost:8080`).
+- ⚡ **SMAPI & Mod Support**: Pre-configured with SMAPI 4.5.2 and JunimoServer host automation.
+- 🍎 **Apple Silicon & x86_64 Compatible**: Pre-configured with `platform: linux/amd64` to run smoothly on macOS (Apple Silicon via Rosetta 2) and Linux/Windows.
 
-- **Always-On Hosting**: Keep your farm running 24/7 without needing to leave the game open.
-- **Easy Management**: Control your server through a simple, web-based interface with admin capabilities.
-- **Persistent Progress**: Protect your crops and ensure your farm continues to thrive, even when no one’s online.
-- **Automatic Backups**: Regularly save your farm so you can easily restore it if something goes wrong.
-- **Fully Customizable**: Change game modes, tweak settings, and optimize performance to fit your needs.
-- **Mod-Friendly**: Supports SMAPI mods to enhance your Stardew Valley experience with customizations and extra content.
+---
 
-## Quick start
+## Prerequisites
 
-### Prerequisites
+1. **Docker**: Install [Docker Desktop](https://www.docker.com/products/docker-desktop/) (macOS / Windows) or [Docker Engine](https://docs.docker.com/engine/install/) (Linux).
+2. **GOG Linux Installer**: Stardew Valley GOG Linux installer script (e.g. `stardew_valley_1_6_15_*.sh`).
 
-- **Docker**: Install [Docker Desktop](https://www.docker.com/products/docker-desktop/) (Windows/Mac) or [Docker Engine](https://docs.docker.com/engine/install/) (Linux)
-- **Steam account**: A Steam account that owns Stardew Valley (required to download game files)
+---
 
-### Getting started
+## Quick Start
 
-1. **Create Configuration**:
+### 1. Extract GOG Linux Game Files
 
-    Download the configuration files from GitHub:
-    - [`docker-compose.yml`](https://github.com/stardew-valley-dedicated-server/server/blob/master/docker-compose.yml)
-    - [`.env.example`](https://github.com/stardew-valley-dedicated-server/server/blob/master/.env.example)
+Extract the `data/noarch/game/` folder from your GOG Linux installer `.sh` file and copy it into the Docker volume `stardew-valley-gog-standalone_game-data`:
 
-    Rename `.env.example` to `.env` and configure your server. Here is a minimal example:
+```bash
+# Create the volume
+docker volume create stardew-valley-gog-standalone_game-data
 
-    ```sh
-    # Steam Account Details (required for downloading the game server)
-    STEAM_USERNAME=""
-    STEAM_PASSWORD=""
+# Extract GOG installer payload
+unzip -q "/path/to/stardew_valley_1_6_15_*.sh" "data/noarch/game/*" -d /tmp/gog_game
 
-    # VNC Server (for web-based administration access)
-    VNC_PASSWORD=""
-    ```
+# Copy game files into the Docker volume
+docker run --rm \
+  -v stardew-valley-gog-standalone_game-data:/data/game \
+  -v /tmp/gog_game/data/noarch/game:/source \
+  alpine sh -c "cp -rp /source/* /data/game/ && chmod -R 777 /data/game"
 
-2. **First-Time Setup**:
-
-    Run the interactive setup to authenticate with Steam and download the game files:
-
-    ```sh
-    docker compose run --rm -it steam-auth setup
-    ```
-
-    This will prompt you for Steam Guard authentication if enabled on your account.
-
-3. **Start the Server**:
-
-    To start the server as a background process, run `docker compose up -d`.
-
-    To see logs, run `docker compose logs -f`.
-
-4. **Stop the Server**:
-
-    To save and stop the server, run `docker compose down`.
-
-    Your save files and Steam session are stored in Docker volumes (`saves` and `steam-session`) and persist across restarts.
-
-### Updating to a new version
-
-When a new version is released, update your server with:
-
-```sh
-docker compose pull
-docker compose down
-docker compose up -d
+# Clean up temporary extraction folder
+rm -rf /tmp/gog_game
 ```
 
-### Using preview releases
+### 2. Add Steamworks.NET DLL (For GOG Compatibility)
 
-> **Note:** JunimoServer is under heavy development. If the latest stable release isn't working for you, try the preview release — it often contains fixes that haven't been officially released yet. As the project matures, stable releases will become more reliable.
+Download `Steamworks.NET` 20.0.0 and place `Steamworks.NET.dll` into the game volume:
 
-Preview builds are published automatically with every code change. To use a preview release, add this to your `.env` file:
+```bash
+curl -sL https://github.com/rlabrecque/Steamworks.NET/releases/download/20.0.0/Steamworks.NET-Standalone_20.0.0.zip -o /tmp/Steamworks.zip
+unzip -p /tmp/Steamworks.zip OSX-Linux-x64/Steamworks.NET.dll > /tmp/Steamworks.NET.dll
 
-```sh
-# Use the latest preview build
+docker run --rm \
+  -v stardew-valley-gog-standalone_game-data:/data/game \
+  -v /tmp/Steamworks.NET.dll:/tmp/Steamworks.NET.dll \
+  alpine cp /tmp/Steamworks.NET.dll /data/game/Steamworks.NET.dll
+
+rm -f /tmp/Steamworks.zip /tmp/Steamworks.NET.dll
+```
+
+### 3. Configure Environment & Server Settings
+
+Copy `.env.example` to `.env`:
+
+```bash
+cp .env.example .env
+```
+
+Ensure `.env` contains:
+
+```env
 IMAGE_VERSION=preview
+VNC_PASSWORD="admin"
+ALLOW_INSECURE_SETUP=true
 ```
 
-To switch back to stable releases, remove the line or set it to `latest`:
+Ensure `.local-container/settings/server-settings.json` has IP connections enabled:
 
-```sh
-IMAGE_VERSION=latest
+```json
+{
+  "Server": {
+    "AllowIpConnections": true
+  }
+}
 ```
 
-After changing the version, run:
+### 4. Start the Server
 
-```sh
-docker compose pull
-docker compose down
+Start the container in background mode:
+
+```bash
 docker compose up -d
 ```
 
-You can also pin to a specific version (e.g., `IMAGE_VERSION=1.0.0` or `IMAGE_VERSION=1.1.0-preview.3`). Check [Docker Hub](https://hub.docker.com/r/sdvd/server/tags) for available tags.
+View server startup logs:
 
-## Documentation
+```bash
+docker compose logs -f
+```
 
-Explore the [full documentation](https://stardew-valley-dedicated-server.github.io/server/) to get started. Here's what you'll find:
+---
 
-- **[Getting Started](https://stardew-valley-dedicated-server.github.io/server/getting-started/introduction):** Step-by-step instructions on setting up and managing your server.
-- **[Server Guide](https://stardew-valley-dedicated-server.github.io/server/guide/using-the-server):** Learn how to use and manage your server.
-- **[Community](https://stardew-valley-dedicated-server.github.io/server/community/getting-help):** Find out how to get involved and get help.
+## How Players Connect
 
-## Support
+1. Launch Stardew Valley on client machines.
+2. Select **Co-op** -> **Join**.
+3. Choose **Join LAN Game...** (or **Join via IP**).
+4. Enter the host server's IP address (or `localhost` if running locally).
 
-JunimoServer is free and open-source, maintained in spare time. If it keeps your farm running and you'd like to give something back, donations help cover **server/hosting costs** and **development time** — entirely optional, always appreciated. 🌱
+---
 
-- **[GitHub Sponsors](https://github.com/sponsors/JulianVallee)** — monthly or one-time, 100% goes to development.
-- **[Ko-fi](https://ko-fi.com/junimoserver)** — buy the project a coffee (one-time, PayPal or card).
+## Web Interfaces & Ports
 
-Not in a position to donate? Starring the repo, reporting bugs, improving the docs, or helping others on [Discord](https://discord.gg/w23GVXdSF7) helps just as much.
+- **VNC Web Administration UI**: `http://localhost:5800` (Password: `admin`)
+- **REST API**: `http://localhost:8080/status`
+- **Game Server UDP Ports**: `24642` and `27015`
+
+---
+
+## Managing the Server
+
+- **View Logs**: `docker compose logs -f`
+- **Restart Server**: `docker compose restart`
+- **Stop Server**: `docker compose down`

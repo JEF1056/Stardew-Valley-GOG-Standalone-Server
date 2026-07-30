@@ -275,23 +275,41 @@ public class GalaxyAuthService : ModService
         // Steam GameServer mode: Patch SteamHelper to use GameServer APIs instead of Client APIs
         _monitor.Log("Registering Steam GameServer API patches for SteamHelper", LogLevel.Debug);
 
-        // Patch SteamHelper.Initialize to use GameServer.Init() instead of SteamAPI.Init()
-        harmony.Patch(
-            original: AccessTools.Method(typeof(SteamHelper), nameof(SteamHelper.Initialize)),
-            prefix: new HarmonyMethod(galaxyAuthServiceType, nameof(SteamHelperInitialize_Prefix))
-        );
+        // Patch SteamHelper/NullSDKHelper.Initialize to use GameServer.Init() instead of SteamAPI.Init()
+        var initMethod = AccessTools.DeclaredMethod(typeof(SteamHelper), nameof(SteamHelper.Initialize))
+                      ?? AccessTools.DeclaredMethod(typeof(NullSDKHelper), nameof(NullSDKHelper.Initialize))
+                      ?? AccessTools.Method(typeof(SteamHelper), nameof(SteamHelper.Initialize));
+        if (initMethod != null)
+        {
+            harmony.Patch(
+                original: initMethod,
+                prefix: new HarmonyMethod(galaxyAuthServiceType, nameof(SteamHelperInitialize_Prefix))
+            );
+        }
 
-        // Patch SteamHelper.Update to use GameServer.RunCallbacks() instead of SteamAPI.RunCallbacks()
-        harmony.Patch(
-            original: AccessTools.Method(typeof(SteamHelper), nameof(SteamHelper.Update)),
-            prefix: new HarmonyMethod(galaxyAuthServiceType, nameof(SteamHelperUpdate_Prefix))
-        );
+        // Patch SteamHelper/NullSDKHelper.Update to use GameServer.RunCallbacks() instead of SteamAPI.RunCallbacks()
+        var updateMethod = AccessTools.DeclaredMethod(typeof(SteamHelper), nameof(SteamHelper.Update))
+                        ?? AccessTools.DeclaredMethod(typeof(NullSDKHelper), nameof(NullSDKHelper.Update))
+                        ?? AccessTools.Method(typeof(SteamHelper), nameof(SteamHelper.Update));
+        if (updateMethod != null)
+        {
+            harmony.Patch(
+                original: updateMethod,
+                prefix: new HarmonyMethod(galaxyAuthServiceType, nameof(SteamHelperUpdate_Prefix))
+            );
+        }
 
-        // Patch SteamHelper.Shutdown to use GameServer.Shutdown() instead of SteamAPI.Shutdown()
-        harmony.Patch(
-            original: AccessTools.Method(typeof(SteamHelper), nameof(SteamHelper.Shutdown)),
-            prefix: new HarmonyMethod(galaxyAuthServiceType, nameof(SteamHelperShutdown_Prefix))
-        );
+        // Patch SteamHelper/NullSDKHelper.Shutdown to use GameServer.Shutdown() instead of SteamAPI.Shutdown()
+        var shutdownMethod = AccessTools.DeclaredMethod(typeof(SteamHelper), nameof(SteamHelper.Shutdown))
+                          ?? AccessTools.DeclaredMethod(typeof(NullSDKHelper), nameof(NullSDKHelper.Shutdown))
+                          ?? AccessTools.Method(typeof(SteamHelper), nameof(SteamHelper.Shutdown));
+        if (shutdownMethod != null)
+        {
+            harmony.Patch(
+                original: shutdownMethod,
+                prefix: new HarmonyMethod(galaxyAuthServiceType, nameof(SteamHelperShutdown_Prefix))
+            );
+        }
 
         // Patch SteamNetServer.initialize to skip - it uses Steam Client API (SteamMatchmaking.CreateLobby)
         // which isn't available in GameServer mode. We use SteamKit2 for lobby creation instead.
