@@ -14,6 +14,14 @@ services:
       - "${QUERY_PORT:-27015}:27015/udp"
     cap_add:
       - SYS_TIME
+    deploy:
+      resources:
+        limits:
+          cpus: '1.5'
+          memory: 2G
+        reservations:
+          cpus: '0.25'
+          memory: 512M
     volumes:
       - game-data:/data/game
       - saves:/config/xdg/config/StardewValley
