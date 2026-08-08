@@ -10,6 +10,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using JunimoServer.Services.CabinManager;
+using JunimoServer.Services.Commands;
 using JunimoServer.Services.GameCreator;
 using JunimoServer.Services.GameManager;
 using JunimoServer.Services.PasswordProtection;
@@ -52,6 +53,9 @@ public class ServerStatus
 
     /// <summary>Server mod version.</summary>
     public string ServerVersion { get; set; } = "";
+
+    /// <summary>Stardew Valley game version (Game1.version, e.g. "1.6.15").</summary>
+    public string GameVersion { get; set; } = "";
 
     /// <summary>Whether the server is online and hosting.</summary>
     public bool IsOnline { get; set; }
@@ -251,6 +255,15 @@ public class DiagnosticsCabinState
     /// not the raw ID: /diagnostics/state is unauthenticated and the ID is a stable identifier.</summary>
     public bool OwnerHasUserId { get; set; }
 
+    /// <summary>Whether the cabin owner (its farmhand) has a server-side ownership record
+    /// (recorded at the join gate's approve moment or by a save-import bind). Bool, not the raw
+    /// ID — same unauthenticated-endpoint rule as <see cref="OwnerHasUserId"/>.</summary>
+    public bool OwnerHasOwner { get; set; }
+
+    /// <summary>Platform tag of the cabin owner's ownership record ("steam"/"galaxy"), or ""
+    /// when unowned.</summary>
+    public string OwnerPlatform { get; set; } = "";
+
     public string HomeLocationOfOwner { get; set; } = "";
     public bool FarmhandReferenceDefined { get; set; }
     public long FarmhandReferenceUid { get; set; }
@@ -285,6 +298,18 @@ public class DiagnosticsFarmhandState
     /// IsCustomized=false is the abandoned-claim state. Exposed as a bool, not the raw ID:
     /// /diagnostics/state is unauthenticated and the ID is a stable identifier.</summary>
     public bool HasUserId { get; set; }
+
+    /// <summary>Whether this slot has a server-side ownership record (recorded at the join
+    /// gate's approve moment or by a save-import bind). Bool, not the raw ID — same
+    /// unauthenticated-endpoint rule as <see cref="HasUserId"/>.</summary>
+    public bool HasOwner { get; set; }
+
+    /// <summary>Platform tag of the ownership record ("steam"/"galaxy"), or "" when unowned.</summary>
+    public string OwnerPlatform { get; set; } = "";
+
+    /// <summary>Whether the slot is operator-released: claimable by any transport, first
+    /// successful claim becomes the owner.</summary>
+    public bool Released { get; set; }
 }
 
 public class ReadyCheckState
@@ -374,6 +399,12 @@ public class StatsResponse
 
     /// <summary>Rolling average game thread wait time in milliseconds (60-sample window).</summary>
     public double GameThreadWaitMs { get; set; }
+
+    /// <summary>ISO 8601 UTC time the mod started, or null if not yet available.</summary>
+    public string? StartedAtUtc { get; set; }
+
+    /// <summary>Seconds the mod has been running, or null if the start time isn't available.</summary>
+    public long? UptimeSeconds { get; set; }
 }
 
 /// <summary>
@@ -757,6 +788,7 @@ public partial class ApiService : ModService
     private readonly PasswordProtectionService? _passwordProtectionService;
     private readonly SaveImport.SaveImportService _saveImportService;
     private readonly NpcIntegrity.NpcSpriteIntegrityService _npcSpriteIntegrity;
+    private readonly Auth.FarmhandOwnershipService _farmhandOwnership;
 
     // WebSocket client management
     private readonly List<WebSocket> _wsClients = new();
@@ -764,15 +796,41 @@ public partial class ApiService : ModService
     private Timer? _wsCleanupTimer;
 
     /// <summary>
+    /// A queued game-thread action whose execution and timeout compete for an atomic claim: the game
+    /// thread claims pending→executing before running, the timeout callback claims pending→timed-out
+    /// before cancelling. Exactly one side wins, so a timed-out request can never mutate the world
+    /// after its caller was told nothing changed, and an in-flight action is never reported as timed
+    /// out (the caller awaits its real result instead). Must be a reference type — the claim state
+    /// has to be shared between the queue and the timeout callback, not copied per dequeue. Same
+    /// claim pattern as the test client's <c>ExecuteOnGameThread</c> (tests/test-client/ModEntry.cs);
+    /// keep the two in sync.
+    /// </summary>
+    private sealed class PendingGameAction
+    {
+        // 0 = pending, 1 = timed out (execution must skip), 2 = executing (timeout must not cancel).
+        private int _state;
+
+        public PendingGameAction(Action action, TaskCompletionSource<bool> completion)
+        {
+            Action = action;
+            Completion = completion;
+        }
+
+        public Action Action { get; }
+        public TaskCompletionSource<bool> Completion { get; }
+
+        public bool TryClaimExecution() => Interlocked.CompareExchange(ref _state, 2, 0) == 0;
+
+        public bool TryClaimTimeout() => Interlocked.CompareExchange(ref _state, 1, 0) == 0;
+    }
+
+    /// <summary>
     /// Queue of actions to execute on the main game thread.
     /// Used for game state modifications that would cause collection modification errors
     /// if executed from the async HTTP thread (e.g., removing buildings during draw).
     /// Each action includes a TaskCompletionSource to signal completion back to the caller.
     /// </summary>
-    private readonly ConcurrentQueue<(
-        Action Action,
-        TaskCompletionSource<bool> Completion
-    )> _pendingGameActions = new();
+    private readonly ConcurrentQueue<PendingGameAction> _pendingGameActions = new();
 
     /// <summary>
     /// Ticks timestamp of the last OnUpdateTicked call, used by /health to detect game thread stalls.
@@ -897,6 +955,7 @@ public partial class ApiService : ModService
         public int Year;
         public int TimeOfDay;
         public string FarmTypeKey = "";
+        public string GameVersion = "";
         public bool IsPaused;
 
         // /players
@@ -1024,6 +1083,7 @@ public partial class ApiService : ModService
         RoleService roleService,
         SaveImport.SaveImportService saveImportService,
         NpcIntegrity.NpcSpriteIntegrityService npcSpriteIntegrity,
+        Auth.FarmhandOwnershipService farmhandOwnership,
         PasswordProtectionService? passwordProtectionService = null
     )
         : base(helper, monitor)
@@ -1034,6 +1094,7 @@ public partial class ApiService : ModService
         _roleService = roleService;
         _saveImportService = saveImportService;
         _npcSpriteIntegrity = npcSpriteIntegrity;
+        _farmhandOwnership = farmhandOwnership;
         _passwordProtectionService = passwordProtectionService;
         _instance = this;
     }
@@ -1139,6 +1200,12 @@ public partial class ApiService : ModService
         var actionsProcessed = false;
         while (_pendingGameActions.TryDequeue(out var item))
         {
+            if (!item.TryClaimExecution())
+            {
+                // The caller's RunOnGameThreadAsync timed out and returned an error; the atomic claim
+                // guarantees the timeout can no longer land once execution starts (and vice versa).
+                continue;
+            }
             actionsProcessed = true;
             try
             {
@@ -1302,6 +1369,10 @@ public partial class ApiService : ModService
                 CapturedAt = capturedAt.ToString("o"),
                 CapturedAtUtc = capturedAt,
             };
+
+            // Game version is a process-wide engine constant (Game1.version), available before a
+            // save loads — set it before the offline early-return so /status reports it even offline.
+            snap.GameVersion = Game1.version ?? "";
 
             // IsOnline always tracked (its change is observable independently
             // of the early-return branch below).
@@ -1782,10 +1853,20 @@ public partial class ApiService : ModService
             using var _correlationScope = Diagnostics.ModRequestContext.Bind(capturedRequestId);
             action();
         };
-        _pendingGameActions.Enqueue((wrapped, tcs));
+        var item = new PendingGameAction(wrapped, tcs);
+        _pendingGameActions.Enqueue(item);
 
         using var cts = new CancellationTokenSource(timeoutMs);
-        using var registration = cts.Token.Register(() => tcs.TrySetCanceled());
+        using var registration = cts.Token.Register(() =>
+        {
+            // Claim pending→timed-out before cancelling. If the game thread already claimed
+            // execution, don't cancel — the caller awaits the action's real result instead of
+            // being told a mutation that is running right now didn't apply.
+            if (item.TryClaimTimeout())
+            {
+                tcs.TrySetCanceled();
+            }
+        });
 
         try
         {
@@ -2725,7 +2806,10 @@ public partial class ApiService : ModService
         var version = modInfo?.Manifest?.Version?.ToString() ?? "unknown";
         var snap = _snapshot;
 
-        // Derive invite codes from file (thread-safe file read)
+        // Derive invite codes from file (thread-safe file read). The S-code is exposed only
+        // once the Galaxy lobby carries the SteamLobbyId stamp — a vanilla Steam client
+        // completes an S-code join by reading that stamp, so showing the code any earlier
+        // (e.g. on GameServer init alone) hands out a code that still fails to join.
         var inviteCode = InviteCodeFile.Read(Monitor);
         string? steamInviteCode = null;
         string? gogInviteCode = null;
@@ -2733,7 +2817,7 @@ public partial class ApiService : ModService
         {
             var baseCode = inviteCode.Length > 1 ? inviteCode.Substring(1) : inviteCode;
             gogInviteCode = GalaxyNetHelper.GalaxyInvitePrefix + baseCode;
-            if (SteamGameServer.SteamGameServerService.IsInitialized)
+            if (Auth.GalaxyAuthService.SteamLobbyPublished)
             {
                 steamInviteCode = GalaxyNetHelper.SteamInvitePrefix + baseCode;
             }
@@ -2746,6 +2830,7 @@ public partial class ApiService : ModService
                 PlayerCount = 0,
                 MaxPlayers = 4,
                 ServerVersion = version,
+                GameVersion = snap.GameVersion,
                 IsOnline = false,
                 IsReady = false,
                 DayTransitionComplete = false,
@@ -2761,6 +2846,7 @@ public partial class ApiService : ModService
             SteamInviteCode = steamInviteCode,
             GogInviteCode = gogInviteCode,
             ServerVersion = version,
+            GameVersion = snap.GameVersion,
             IsOnline = true,
             IsReady = snap.IsReady,
             DayTransitionComplete = snap.DayTransitionComplete,
@@ -3074,7 +3160,7 @@ public partial class ApiService : ModService
         return resp;
     }
 
-    private static List<DiagnosticsCabinState> ReadCabinDiagnostics()
+    private List<DiagnosticsCabinState> ReadCabinDiagnostics()
     {
         var list = new List<DiagnosticsCabinState>();
         var farm = Game1.getFarm();
@@ -3094,6 +3180,11 @@ public partial class ApiService : ModService
 
                 var cabin = building.GetIndoors<StardewValley.Locations.Cabin>();
                 var owner = cabin?.owner;
+                Auth.FarmhandOwnerRecord ownerRecord = null;
+                if (owner != null)
+                {
+                    _farmhandOwnership.TryGetOwner(owner.UniqueMultiplayerID, out ownerRecord);
+                }
                 list.Add(
                     new DiagnosticsCabinState
                     {
@@ -3104,6 +3195,8 @@ public partial class ApiService : ModService
                         OwnerName = owner?.Name ?? "",
                         OwnerIsCustomized = owner?.isCustomized?.Value ?? false,
                         OwnerHasUserId = !string.IsNullOrEmpty(owner?.userID?.Value),
+                        OwnerHasOwner = ownerRecord != null,
+                        OwnerPlatform = ownerRecord?.Platform ?? "",
                         HomeLocationOfOwner = owner?.homeLocation?.Value ?? "",
                         FarmhandReferenceDefined =
                             cabin?.farmhandReference?.defined?.Value ?? false,
@@ -3139,7 +3232,7 @@ public partial class ApiService : ModService
         return cellar?.objects?.Count() ?? 0;
     }
 
-    private static List<DiagnosticsFarmhandState> ReadFarmhandDiagnostics()
+    private List<DiagnosticsFarmhandState> ReadFarmhandDiagnostics()
     {
         var list = new List<DiagnosticsFarmhandState>();
         var farmhandData = Game1.netWorldState?.Value?.farmhandData;
@@ -3158,6 +3251,8 @@ public partial class ApiService : ModService
                     continue;
                 }
 
+                Auth.FarmhandOwnerRecord ownerRecord = null;
+                _farmhandOwnership.TryGetOwner(f.UniqueMultiplayerID, out ownerRecord);
                 list.Add(
                     new DiagnosticsFarmhandState
                     {
@@ -3167,6 +3262,9 @@ public partial class ApiService : ModService
                         HomeLocation = f.homeLocation?.Value ?? "",
                         LastSleepLocation = f.lastSleepLocation?.Value ?? "",
                         HasUserId = !string.IsNullOrEmpty(f.userID?.Value),
+                        HasOwner = ownerRecord != null,
+                        OwnerPlatform = ownerRecord?.Platform ?? "",
+                        Released = _farmhandOwnership.IsReleased(f.UniqueMultiplayerID),
                     }
                 );
             }
@@ -4006,6 +4104,7 @@ public partial class ApiService : ModService
     [ApiResponse(typeof(StatsResponse), 200)]
     private StatsResponse HandleGetStats()
     {
+        var startedAt = ServerCommand.StartTimeUtc;
         return new StatsResponse
         {
             Fps = Math.Round(Volatile.Read(ref _currentFps), 1),
@@ -4017,6 +4116,8 @@ public partial class ApiService : ModService
             GcGen2 = GC.CollectionCount(2),
             PendingActions = _pendingGameActions.Count,
             GameThreadWaitMs = Math.Round(Volatile.Read(ref _avgGameThreadWaitMs), 2),
+            StartedAtUtc = startedAt?.ToString("o"),
+            UptimeSeconds = startedAt is { } t ? (long)(DateTime.UtcNow - t).TotalSeconds : null,
         };
     }
 
@@ -4652,6 +4753,10 @@ public partial class ApiService : ModService
                     LogLevel.Warn
                 );
                 Game1.netWorldState.Value.farmhandData.Remove(farmhandId);
+                // DestroyCabin drops the owner record on the cabin path; this direct-removal
+                // fallback must too, or the deleted slot's record lingers until the next load's
+                // self-heal.
+                _farmhandOwnership.RemoveOwner(farmhandId);
             }
             else
             {

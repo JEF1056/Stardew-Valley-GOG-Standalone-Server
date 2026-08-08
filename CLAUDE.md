@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 JunimoServer is a Stardew Valley dedicated server mod enabling 24/7 multiplayer hosting via Docker. The mod runs inside the game via SMAPI, exposing an HTTP API, WebSocket, and chat commands for external control.
 
+**Players connect with unmodded vanilla clients.** All mod code — Harmony patches, asset edits — exists only in the server process; per-player client behavior can only ride net-synced server-authoritative state or vanilla network messages (control surface: `.claude/rules/vanilla-client-control-primitives.md`).
+
 **Stack**: C# mod (net6.0/SMAPI) + Docker containers + xUnit v3 E2E tests (net10.0) + Vue/TypeScript test UI + VNC for visual debugging. Test infrastructure includes client pooling, server pre-start, and WebSocket-based real-time updates.
 
 ## Core Principles
@@ -56,4 +58,4 @@ When tests fail, follow the runbook at `docs/developers/testing/test-failure-run
 
 - **Commits**: Conventional commits enforced by commitlint (`feat:`, `fix:`, `perf:`, `docs:`, `test:`, `chore:`, `refactor:`, `ci:`, `build:`)
 - **Decompiled sources**: Reference at `decompiled/sdv-1.6.15-24356/` for tracing game mechanics
-- **Helpers are integration-tested, not unit-tested**: `tests/JunimoServer.Tests/` is E2E only — there is no unit-test layer. Verification of new helper code (e.g., wait-tracing primitives) is done by inspecting the JSONL output of a real run, not by isolated unit tests.
+- **Helpers are integration-tested, not unit-tested**: `tests/JunimoServer.Tests/` is E2E-first — verification of new helper code (e.g., wait-tracing primitives) is done by inspecting the JSONL output of a real run, not by isolated unit tests. Sole exception: deterministic in-memory guards for timing races a live run cannot reliably reproduce (e.g., `ExclusiveGateOwnershipTests`, a ~1ms double-release window).

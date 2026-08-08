@@ -18,13 +18,13 @@ public class TestServerAttribute : Attribute
     private int? _clients;
     private string? _cabinStrategy;
     private string? _existingCabinBehavior;
-    private bool? _allowIpConnections;
     private IsolationMode? _isolation;
     private int? _priority;
     private bool? _keepConnected;
     internal bool? _exclusive;
     private bool? _artifacts;
     private bool? _fixtureFarmMod;
+    private int? _serverTps;
 
     // "Was this property explicitly set?" tracking for Password
     // because null is a meaningful value (no password)
@@ -95,15 +95,22 @@ public class TestServerAttribute : Attribute
         get => _existingCabinBehavior ?? "KeepExisting";
         set => _existingCabinBehavior = value;
     }
-    public bool AllowIpConnections
-    {
-        get => _allowIpConnections ?? false;
-        set => _allowIpConnections = value;
-    }
     public IsolationMode Isolation
     {
         get => _isolation ?? IsolationMode.SharedClass;
         set => _isolation = value;
+    }
+
+    /// <summary>
+    /// SERVER_TPS override for this test's server container. 0 (default) uses the suite-wide
+    /// .env.test SERVER_TPS. A non-divisor-of-60 value (e.g. 24 → TickScale 2.5) exercises
+    /// TpsAgnosticPacing's fractional sub-step carry, which the suite-wide integer scale never hits.
+    /// Enters the server config hash, so a distinct value provisions its own pooled server.
+    /// </summary>
+    public int ServerTps
+    {
+        get => _serverTps ?? 0;
+        set => _serverTps = value;
     }
 
     /// <summary>
@@ -178,12 +185,12 @@ public class TestServerAttribute : Attribute
         merged._maxPlayers = method._maxPlayers ?? _maxPlayers;
         merged._cabinStrategy = method._cabinStrategy ?? _cabinStrategy;
         merged._existingCabinBehavior = method._existingCabinBehavior ?? _existingCabinBehavior;
-        merged._allowIpConnections = method._allowIpConnections ?? _allowIpConnections;
         merged._isolation = method._isolation ?? _isolation;
         merged._priority = method._priority ?? _priority;
         merged._keepConnected = method._keepConnected ?? _keepConnected;
         merged._exclusive = method._exclusive ?? _exclusive;
         merged._fixtureFarmMod = method._fixtureFarmMod ?? _fixtureFarmMod;
+        merged._serverTps = method._serverTps ?? _serverTps;
         merged.SharedGroup = method.SharedGroup ?? SharedGroup;
 
         // DeferAcquisition uses OR: if either says defer, we defer

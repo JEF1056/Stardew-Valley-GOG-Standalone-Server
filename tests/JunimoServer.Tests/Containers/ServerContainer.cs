@@ -265,8 +265,22 @@ public class ServerContainer : IAsyncDisposable
             .WithEnvironment("SETTINGS_PATH", SettingsPath)
             .WithEnvironment("API_ENABLED", "true")
             .WithEnvironment("API_PORT", ContainerApiPort.ToString())
-            // Performance/test settings
-            .WithEnvironment("SERVER_TPS", TestEnvLoader.Get("SERVER_TPS") ?? "60")
+            // Performance/test settings. A per-class ServerTps override (TestServerAttribute) wins over
+            // the suite-wide .env.test value — it is part of the server pooling key, so a distinct TPS
+            // gets its own server instance.
+            .WithEnvironment(
+                "SERVER_TPS",
+                options.ServerTps > 0
+                    ? options.ServerTps.ToString()
+                    : TestEnvLoader.Get("SERVER_TPS") ?? "60"
+            )
+            // Kill-switch for the TPS-agnostic pacing patches (fades + movement sub-step). Default-on
+            // in the mod; pass .env.test's value through so a run can set it =false to A/B the patches
+            // (movement reverts to ~60/TPS× slow). Passing the default "true" is a no-op.
+            .WithEnvironment(
+                "SDVD_TPS_AGNOSTIC_PACING",
+                TestEnvLoader.Get("SDVD_TPS_AGNOSTIC_PACING") ?? "true"
+            )
             // SERVER_FPS drives both the in-container draw cap and the recorder's
             // sample rate (they're literally the same value; sampling X11 faster
             // than the framebuffer updates is wasted). 0 = rendering disabled.
@@ -756,12 +770,40 @@ public class ServerContainer : IAsyncDisposable
         }
     }
 
+    private Action<string>? _onErrorDetected;
+
     /// <summary>
-    /// Gets a cancellation token that triggers when a server error is detected.
+    /// Raised once per detected server error (a flushed SMAPI ERROR/FATAL block) with the
+    /// full error text. Errors detected before a handler attaches are replayed to it at
+    /// subscription — a subscriber that wires up after boot cannot miss a boot-window
+    /// error — so delivery is at-least-once and handlers must be idempotent. Handlers
+    /// stay attached for the container's lifetime — <see cref="ClearErrors"/> resets the
+    /// accumulated error list, not this event.
     /// </summary>
-    public CancellationToken GetErrorCancellationToken()
+    public event Action<string> OnErrorDetected
     {
-        return _errorCancellation?.Token ?? CancellationToken.None;
+        add
+        {
+            string[] pending;
+            lock (_serverErrorsLock)
+            {
+                _onErrorDetected += value;
+                pending = _serverErrors.ToArray();
+            }
+            // Replay outside the lock: handlers do nontrivial work (poison → drain →
+            // dispose), and a throw here surfaces in the subscriber's own context.
+            foreach (var error in pending)
+            {
+                value(error);
+            }
+        }
+        remove
+        {
+            lock (_serverErrorsLock)
+            {
+                _onErrorDetected -= value;
+            }
+        }
     }
 
     /// <summary>
@@ -1017,6 +1059,13 @@ public class ServerContainer : IAsyncDisposable
         try
         {
             _errorCancellation?.Cancel();
+        }
+        catch { }
+        // Guarded like the Cancel above: a throwing handler must not kill the log pump
+        // (it also feeds recording and error accumulation).
+        try
+        {
+            _onErrorDetected?.Invoke(fullError);
         }
         catch { }
 

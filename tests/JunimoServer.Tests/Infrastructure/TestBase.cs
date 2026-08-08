@@ -417,7 +417,7 @@ public abstract class TestBase : IAsyncLifetime, IDisposable
             SetupEventBus.EmitInstanceLeased(
                 lease.InstanceId,
                 _testDisplayName,
-                serverLease.Managed?.InstanceId
+                serverLease.Managed.InstanceId
             );
         }
 
@@ -436,6 +436,10 @@ public abstract class TestBase : IAsyncLifetime, IDisposable
         };
 
         _connection = new ConnectionHelper(lease.Client, connectionOptions, ServerApi);
+
+        // Wire the per-server join gate onto the join core (see ConnectionHelper.AcquireJoinGate).
+        _connection.AcquireJoinGate = serverLease.Managed.AcquireJoinGateAsync;
+        _connection.ReleaseJoinGate = serverLease.Managed.ReleaseJoinGate;
 
         _connection.OnCheckpointScreenshot = async (label) =>
         {
@@ -473,14 +477,19 @@ public abstract class TestBase : IAsyncLifetime, IDisposable
     /// <summary>
     /// Lease an additional client (for multi-client tests like concurrent auth).
     /// </summary>
-    protected async Task<ClientLease> LeaseClientAsync(CancellationToken ct = default)
+    /// <param name="requireSteam">See <see cref="ResourceLease.LeaseClientAsync"/> — pass
+    /// <c>false</c> for a client that will only connect via LAN.</param>
+    protected async Task<ClientLease> LeaseClientAsync(
+        CancellationToken ct = default,
+        bool? requireSteam = null
+    )
     {
         if (Lease == null)
         {
             throw new InvalidOperationException("Server not acquired.");
         }
 
-        var lease = await Lease.LeaseClientAsync(ct);
+        var lease = await Lease.LeaseClientAsync(ct, requireSteam);
 
         // Mark additional client container for video recording clip extraction
         if (RecordingPolicy.IsEnabled)
@@ -597,10 +606,13 @@ public abstract class TestBase : IAsyncLifetime, IDisposable
     /// Leases an additional client container for a Fixture/ helper (e.g. a second concurrent
     /// farmer). Delegates to the protected <see cref="LeaseClientAsync"/> so the
     /// recording-mark side effect is preserved; the protected method isn't reachable from a
-    /// sibling-namespace helper.
+    /// sibling-namespace helper. Never requires a Steam-bearing client: the helper's farmer
+    /// joins via LAN by design (<see cref="Fixture.FarmerTestHelper.ConnectSecondFarmerAsync"/>),
+    /// and on a Steam server a second Steam-required lease would deadlock against the test's
+    /// own primary holding the pool's single Steam-bearing client.
     /// </summary>
     internal Task<ClientLease> LeaseClientForHelperAsync(CancellationToken ct = default) =>
-        LeaseClientAsync(ct);
+        LeaseClientAsync(ct, requireSteam: false);
 
     internal Task AcquireServerAsyncInternal(
         ResourceRequirements requirements,

@@ -92,6 +92,17 @@ RUN --mount=type=cache,target=/root/.nuget/packages \
     -p:PublishTrimmed=true \
     -o /output/netdebug
 
+# Build diagnostics tool
+COPY ./tools/diagnostics /src/diagnostics
+RUN --mount=type=cache,target=/root/.nuget/packages \
+    dotnet publish /src/diagnostics \
+    --configuration Release \
+    --self-contained true \
+    --runtime linux-x64 \
+    -p:PublishSingleFile=true \
+    -p:PublishTrimmed=true \
+    -o /output/diagnostics
+
 # Build server mod
 COPY ./mod /src/mod
 RUN --mount=type=cache,target=/root/.nuget/packages \
@@ -216,6 +227,7 @@ RUN \
 # Copy pre-built tools from build stages
 COPY --from=mod-builder /output/dll-patcher /opt/dll-patcher
 COPY --from=mod-builder /output/netdebug /opt/netdebug
+COPY --from=mod-builder /output/diagnostics /opt/diagnostics
 
 # Set executable permissions for application scripts and Supervisor services.
 #
@@ -223,8 +235,18 @@ COPY --from=mod-builder /output/netdebug /opt/netdebug
 # /etc/services.d after copying all system files. This avoids modifying base image service files.
 # Note: .dep files can be executable scripts (return boolean) or empty markers. The ! -empty check
 # makes only non-empty files executable, handling both cases correctly.
+#
+# xrdb/min_running_time=0 declares the xrdb one-shot as expected-to-exit-immediately (the same
+# value the base image ships for its own always-exiting services — verified in the built
+# image's /etc/services.d). cinit treats a service exiting
+# before min_running_time (default 500ms) as a failed start and tears the whole container down
+# (exit 1) — and xrdb (load X resources, exit) only outlives 500ms when it happens to spend that
+# long waiting on a still-warming Xvnc, a timing race a one-shot must not have to win.
+# min_running_time is a VALUE file cinit reads — it must stay non-executable, or cinit tries to
+# run it (fails 126).
 COPY docker/rootfs/etc/services.d /tmp/services/
-RUN find /tmp/services -type f ! -empty -exec chmod +x {} \;
+RUN find /tmp/services -type f ! -empty ! -name min_running_time -exec chmod +x {} \; && \
+    find /tmp/services -type f -name min_running_time -exec chmod 0644 {} \;
 
 # Copy system files (merges with base image)
 COPY docker/rootfs/ /
@@ -244,6 +266,12 @@ COPY --from=mod-builder /output/TestFarmMod /opt/test-fixtures/TestFarmMod
 
 # Copy OpenAPI spec (for extraction via: docker cp or docker run --rm sdvd/server cat /data/openapi.json)
 COPY --from=mod-builder /output/openapi.json /data/openapi.json
+
+# Git commit the image was built from (the diagnostics tool reports it). Declared last, not with the
+# ARGs up top: its value changes every build and a changed ARG/ENV invalidates every layer after it —
+# up top that re-ran the apt install and the ffmpeg/tmux downloads. Nothing in the build consumes it.
+ARG SDVD_GIT_SHA=unknown
+ENV SDVD_GIT_SHA=${SDVD_GIT_SHA}
 
 # Game files and save data are in volumes (game downloaded at runtime)
 VOLUME [ "/data/game", "/config/xdg/config/StardewValley" ]
